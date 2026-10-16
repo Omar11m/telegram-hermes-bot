@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Audio downloads
+voice_downloads/
+downloads/
+
+# Large local models / legacy Hermes repo
+Hermes-Function-Calling-main/
+
+# Environment variables & secrets
+.env
+.env.*
+*.env
+*.key
+*.pem
+
+# Memory & Chat history (Privacy & Encryption)
+memory.json
+memory.enc
+*.enc
+
+# OS specific
+.DS_Store
+Thumbs.db
+
