@@ -11,8 +11,10 @@ import json
 import logging
 import asyncio
 import datetime
+import threading
 import urllib.request
 import urllib.error
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -119,6 +121,79 @@ def clean_arabic_text(text: str) -> str:
     cleaned = re.sub(r'[\u0900-\u0D7F\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]+', '', text)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    """خادم HTTP بسيط للاستجابة لفحص الصحة من منصات السحاب مثل Render"""
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write("Hermes Telegram Bot is running! 🚀".encode("utf-8"))
+
+    def log_message(self, format, *args):
+        return  # كتم سجلات فحص الصحة لمنع التشويش
+
+def start_health_server():
+    """تشغيل خادم فحص الصحة إذا تم تحديد منفذ PORT من منصة Render"""
+    port_str = os.environ.get("PORT", "").strip()
+    if port_str and port_str.isdigit():
+        port = int(port_str)
+        try:
+            server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            logger.info(f"[✓] تم تشغيل خادم فحص الصحة بنجاح على المنفذ: {port}")
+        except Exception as e:
+            logger.warning(f"تعذر تشغيل خادم فحص الصحة: {e}")
+
+OLLAMA_AVAILABLE = False
+
+def chat_with_gemini_text(messages: list, user_name: str = "أبو يوسف") -> str:
+    """معالجة النصوص عبر Gemini تلقائياً في السحاب (Render) عند عدم توفر Ollama"""
+    if not gemini_client:
+        return "⚠️ عذراً، مفتاح Gemini API غير مضبوط أو غير متوفر في السيرفر."
+
+    now = datetime.datetime.now()
+    days_ar = ["الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
+    months_ar = [
+        "يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو",
+        "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"
+    ]
+    day_name = days_ar[now.weekday()]
+    month_name = months_ar[now.month - 1]
+    date_str = f"{day_name}، {now.day} {month_name} {now.year}"
+    time_str = now.strftime("%I:%M").lstrip("0") + (" صباحاً" if now.strftime("%p") == "AM" else " مساءً")
+
+    system_instruction = (
+        f"أنت 'هيرمز' (Hermes)، مساعد ذكي وودود وناطق باللغة العربية لـ {user_name}.\n"
+        f"الوقت الحالي: اليوم هو {date_str} والساعة {time_str}.\n"
+        f"أجب دائماً باللغة العربية الفصحى السليمة والمباشرة والموجزة بدون أي ترجمات أو تعقيدات."
+    )
+
+    contents = []
+    for msg in messages:
+        if msg["role"] == "user":
+            contents.append(f"المستخدم: {msg['content']}")
+        elif msg["role"] == "assistant":
+            contents.append(f"هيرمز: {msg['content']}")
+
+    prompt_text = "\n".join(contents)
+    last_err = None
+    for model_name in GEMINI_AUDIO_MODELS:
+        try:
+            res = gemini_client.models.generate_content(
+                model=model_name,
+                contents=prompt_text,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=0.35,
+                )
+            )
+            return clean_arabic_text(res.text)
+        except Exception as e:
+            last_err = e
+            continue
+    return f"⚠️ تعذر الحصول على رد من السحابة: {last_err}"
 
 def chat_with_hermes_arabic(messages: list, model: str = ACTIVE_MODEL) -> str:
     """إرسال المحادثة النصية إلى Ollama محلياً بمعاملات متوازنة تمنع التكرار والتنظير"""
@@ -262,7 +337,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     loop = asyncio.get_running_loop()
     try:
-        reply = await loop.run_in_executor(None, chat_with_hermes_arabic, history, ACTIVE_MODEL)
+        if OLLAMA_AVAILABLE:
+            try:
+                reply = await loop.run_in_executor(None, chat_with_hermes_arabic, history, ACTIVE_MODEL)
+            except Exception as ex:
+                logger.warning(f"تعذر الرد عبر Ollama، جاري التحويل إلى Gemini: {ex}")
+                reply = await loop.run_in_executor(None, chat_with_gemini_text, history, user_name)
+        else:
+            # السيرفر يعمل على Render بدون كرت شاشة/Ollama
+            reply = await loop.run_in_executor(None, chat_with_gemini_text, history, user_name)
+
         if not reply:
             reply = "أهلاً بك، تفضل بطرح سؤالك وسأجيبك بكل سرور."
         history.append({"role": "assistant", "content": reply})
@@ -324,7 +408,6 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         history.append({"role": "assistant", "content": reply})
         save_memory()
 
-
         # 3. إرسال رد Gemini النصي مباشرة إلى المستخدم في تيليجرام
         print(f"[✓] رد Gemini الصوتي: {sanitize_text(reply)}")
         await update.message.reply_text(reply)
@@ -337,19 +420,24 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         secure_delete_file(local_path)
 
 def main():
-    global ACTIVE_MODEL
+    global ACTIVE_MODEL, OLLAMA_AVAILABLE
     print("=" * 60)
     print("      تشغيل بوت تيليجرام لوكيل هيرمز (Hermes 3)")
-    print("      يدعم النصوص محلياً + الرسائل الصوتية عبر Gemini")
+    print("      نظام هجين: محلي (Ollama) وسحابي (Render + Gemini)")
     print("      نظام الأمان المتقدم والتشفير الكامل: مفعّل 🔒")
     print("=" * 60)
 
-    if not ensure_ollama_server():
-        print("[!] خطأ: تعذر تشغيل محرك Ollama المحلي.")
-        return
+    # تشغيل خادم فحص الصحة لمنع إيقاف الخدمة في Render Web Service
+    start_health_server()
 
-    ACTIVE_MODEL = select_model()
-    print(f"[✓] المحرك المحلي متصل بنجاح (النموذج: {ACTIVE_MODEL})")
+    OLLAMA_AVAILABLE = ensure_ollama_server()
+    if OLLAMA_AVAILABLE:
+        ACTIVE_MODEL = select_model()
+        print(f"[✓] المحرك المحلي متصل بنجاح (النموذج: {ACTIVE_MODEL})")
+    else:
+        print("[i] تنبيه: محرك Ollama المحلي غير متوفر (بيئة سحابية Render).")
+        print("[✓] تم تفعيل وضع السحابة بنجاح: Gemini API للنصوص والصوت!")
+
     print(f"[✓] محرك الصوت مدعوم بواسطة Gemini API")
     print(f"[✓] تشفير سجلات المحادثة على القرص: مفعّل 100% (AES / Fernet)")
     
