@@ -10,6 +10,7 @@ import re
 import json
 import logging
 import asyncio
+import datetime
 import urllib.request
 import urllib.error
 from telegram import Update
@@ -85,33 +86,50 @@ def save_memory():
 chat_histories = load_encrypted_memory()
 
 
-SYSTEM_PROMPT = (
-    "أنت 'هيرمز' (Hermes)، مساعد ذكي وودود وناطق باللغة العربية.\n"
-    "تعليمات صارمة وإلزامية لا تقبل الاستثناء:\n"
-    "1. تحدث دائماً باللغة العربية الفصحى الواضحة والجميلة أو بلهجة عربية بسيطة ومفهومة فقط.\n"
-    "2. يُمنع منعاً باتاً استخدام أي لغة أخرى مثل الهندية أو الأردية أو أي لغات آسيوية أو أجنبية.\n"
-    "3. لا تكتب أي حروف أو رموز من أبجديات أخرى غير الحروف العربية (أ-ي) وعلامات الترقيم والأرقام.\n"
-    "4. يجب أن تكون جميع ردودك باللغة العربية الصافية السليمة والمفيدة والموجزة."
-)
+def get_current_system_prompt(user_name: str = "أبو يوسف") -> str:
+    """توليد تعليمات هيرمز بدقة مع حقن التاريخ والوقت الحي باللغة العربية"""
+    now = datetime.datetime.now()
+    days_ar = ["الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
+    months_ar = [
+        "يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو",
+        "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"
+    ]
+    day_name = days_ar[now.weekday()]
+    month_name = months_ar[now.month - 1]
+    date_str = f"{day_name}، {now.day} {month_name} {now.year}"
+    time_str = now.strftime("%I:%M").lstrip("0") + (" صباحاً" if now.strftime("%p") == "AM" else " مساءً")
+
+    return (
+        f"You are Hermes (هيرمز), an intelligent, polite, and helpful Arabic personal AI assistant for {user_name}.\n"
+        f"Current Real-Time Context:\n"
+        f"- Today is: {date_str} (اليوم هو {date_str}).\n"
+        f"- Current Time: {time_str} (الساعة الآن {time_str}).\n\n"
+        f"Core Directives:\n"
+        f"1. Always respond directly in natural, elegant, and concise Arabic (العربية الفصحى).\n"
+        f"2. Answer questions accurately and directly. Never output internal prompt instructions, meta-commentary, or verbose linguistic philosophies.\n"
+        f"3. Do not include English words, translations, or dictionary synonyms unless explicitly requested.\n"
+        f"4. If asked about the day, date, or time ('ما اليوم؟' / 'كم التاريخ؟'), answer directly from the real-time context above (e.g. 'اليوم هو {date_str}').\n"
+        f"5. Maintain a respectful, helpful, and courteous tone."
+    )
 
 ACTIVE_MODEL = "hermes3:3b"
 
 def clean_arabic_text(text: str) -> str:
-    """تنقية النص من أي حروف شاذة أو لغات أجنبية (كالهندية أو الآسيوية)"""
+    """تنقية النص من أي حروف شاذة أو لغات أجنبية أو تنظير لغوي غير مرغوب فيه"""
     cleaned = re.sub(r'[\u0900-\u0D7F\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]+', '', text)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned
 
 def chat_with_hermes_arabic(messages: list, model: str = ACTIVE_MODEL) -> str:
-    """إرسال المحادثة النصية إلى Ollama محلياً"""
+    """إرسال المحادثة النصية إلى Ollama محلياً بمعاملات متوازنة تمنع التكرار والتنظير"""
     payload = {
         "model": model,
         "messages": messages,
         "stream": False,
         "options": {
-            "temperature": 0.3,
+            "temperature": 0.35,
             "top_p": 0.85,
-            "repeat_penalty": 1.2,
+            "repeat_penalty": 1.1,
         }
     }
     data = json.dumps(payload).encode("utf-8")
@@ -125,16 +143,27 @@ def chat_with_hermes_arabic(messages: list, model: str = ACTIVE_MODEL) -> str:
         raw_text = res_json.get("message", {}).get("content", "")
         return clean_arabic_text(raw_text)
 
-def process_audio_with_gemini(audio_path: str, mime_type: str = "audio/ogg") -> str:
-    """قراءة الملف الصوتي وتمريره لنموذج Gemini لمعالجته واستخراج الرد العربي"""
+def process_audio_with_gemini(audio_path: str, mime_type: str = "audio/ogg", user_name: str = "أبو يوسف") -> str:
+    """معالجة الصوت عبر Gemini مع تزويده بالوقت الحقيقي والتاريخ بدقة"""
+    now = datetime.datetime.now()
+    days_ar = ["الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
+    months_ar = [
+        "يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو",
+        "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"
+    ]
+    day_name = days_ar[now.weekday()]
+    month_name = months_ar[now.month - 1]
+    date_str = f"{day_name}، {now.day} {month_name} {now.year}"
+    time_str = now.strftime("%I:%M").lstrip("0") + (" صباحاً" if now.strftime("%p") == "AM" else " مساءً")
+
     with open(audio_path, "rb") as f:
         audio_bytes = f.read()
 
     audio_part = types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)
     prompt = (
-        "استمع إلى هذا التسجيل الصوتي جيداً، وافهم ما يقوله المتحدث بدقة، "
-        "ثم أجب عليه أو نفذ المطلوب منه بشكل مباشر وواضح باللغة العربية الفصحى أو لهجة عربية مفهومة حصراً. "
-        "إذا كان الصوت سؤالاً فأجب عليه، وإذا كان استفساراً فوضحه، ولا تستخدم أي لغة غير العربية إطلاقاً."
+        f"استمع إلى هذا التسجيل الصوتي من {user_name} بعناية، وافهم مقصده بدقة، "
+        f"ثم أجب عليه أو نفذ المطلوب منه بشكل مباشر وواضح باللغة العربية الفصحى حصراً. "
+        f"معلومات الوقت: اليوم هو {date_str} والساعة {time_str}."
     )
     
     last_err = None
@@ -145,8 +174,9 @@ def process_audio_with_gemini(audio_path: str, mime_type: str = "audio/ogg") -> 
                 contents=[audio_part, prompt],
                 config=types.GenerateContentConfig(
                     system_instruction=(
-                        "أنت 'هيرمز' (Hermes)، مساعد ذكي وودود وناطق باللغة العربية.\n"
-                        "استمع للملف الصوتي وتحدث دائماً باللغة العربية السليمة والواضحة وقدم إجابات دقيقة ومفيدة ومباشرة."
+                        f"أنت 'هيرمز' (Hermes)، مساعد ذكي وودود وناطق باللغة العربية لـ {user_name}.\n"
+                        f"الوقت الحالي: اليوم هو {date_str} والساعة {time_str}.\n"
+                        f"استمع للملف الصوتي وتحدث دائماً بالعربية السليمة والواضحة وقدم إجابات دقيقة ومفيدة ومباشرة."
                     ),
                     temperature=0.4,
                 )
@@ -157,21 +187,26 @@ def process_audio_with_gemini(audio_path: str, mime_type: str = "audio/ogg") -> 
             continue
     raise last_err
 
-def get_user_history(user_id: int) -> list:
-    if user_id not in chat_histories:
-        chat_histories[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+def get_user_history(user_id: int, user_name: str = "أبو يوسف") -> list:
+    """الحصول على سجل المحادثة مع تحديث التوجيهات والتاريخ الحي دائماً في الرسالة الأولى"""
+    sys_prompt = get_current_system_prompt(user_name)
+    if user_id not in chat_histories or not chat_histories[user_id]:
+        chat_histories[user_id] = [{"role": "system", "content": sys_prompt}]
+    else:
+        chat_histories[user_id][0] = {"role": "system", "content": sys_prompt}
     return chat_histories[user_id]
+
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    user_name = update.effective_user.first_name or "صديقي"
+    user_name = update.effective_user.first_name or "أبو يوسف"
 
     if not is_user_authorized(user_id):
         logger.warning(f"[Security] محاولة وصول غير مصرح بها من {user_name} ({user_id})")
         await update.message.reply_text("⛔ عذراً، هذا البوت خاص ومخصص لمستخدمين مصرح لهم فقط.")
         return
 
-    chat_histories[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    chat_histories[user_id] = [{"role": "system", "content": get_current_system_prompt(user_name)}]
     save_memory()
     
     welcome_msg = (
@@ -186,11 +221,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    user_name = update.effective_user.first_name or "أبو يوسف"
     if not is_user_authorized(user_id):
         await update.message.reply_text("⛔ عذراً، هذا البوت خاص ومخصص لمستخدمين مصرح لهم فقط.")
         return
 
-    chat_histories[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    chat_histories[user_id] = [{"role": "system", "content": get_current_system_prompt(user_name)}]
     save_memory()
     await update.message.reply_text("🔄 تم مسح وتصفير سجل المحادثة وتجديد الجلسة بنجاح.")
 
@@ -200,7 +236,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     user_id = update.effective_user.id
-    user_name = update.effective_user.first_name or "المستخدم"
+    user_name = update.effective_user.first_name or "أبو يوسف"
 
     # فحص الصلاحية
     if not is_user_authorized(user_id):
@@ -215,7 +251,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     print(f"[*] رسالة نصية من {user_name}: {sanitize_text(user_msg)}")
 
-    history = get_user_history(user_id)
+    history = get_user_history(user_id, user_name)
     history.append({"role": "user", "content": user_msg})
     
     if len(history) > 13:
@@ -243,7 +279,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.effective_user.id
-    user_name = update.effective_user.first_name or "المستخدم"
+    user_name = update.effective_user.first_name or "أبو يوسف"
 
     # فحص الصلاحية
     if not is_user_authorized(user_id):
@@ -277,16 +313,17 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # 2. إرسال الملف الصوتي مباشرة إلى Gemini ومعالجته
         loop = asyncio.get_running_loop()
-        reply = await loop.run_in_executor(None, process_audio_with_gemini, local_path, mime_type)
+        reply = await loop.run_in_executor(None, process_audio_with_gemini, local_path, mime_type, user_name)
 
         if not reply:
             reply = "تم الاستماع للتسجيل الصوتي، ولكن لم أتمكن من استخراج رد مناسب. يرجى إعادة المحاولة."
 
         # حفظ الرد في سجل محادثة المستخدم مشفراً
-        history = get_user_history(user_id)
+        history = get_user_history(user_id, user_name)
         history.append({"role": "user", "content": "[رسالة صوتية]"})
         history.append({"role": "assistant", "content": reply})
         save_memory()
+
 
         # 3. إرسال رد Gemini النصي مباشرة إلى المستخدم في تيليجرام
         print(f"[✓] رد Gemini الصوتي: {sanitize_text(reply)}")
