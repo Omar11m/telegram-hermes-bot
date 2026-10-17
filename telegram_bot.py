@@ -36,7 +36,7 @@ if sys.platform == "win32":
         pass
 
 # استيراد محرك هيرمز المحلي
-from run_hermes_local import ensure_ollama_server, select_model, OLLAMA_BASE_URL
+from run_hermes_local import ensure_ollama_server, select_model, check_ollama_running, OLLAMA_BASE_URL
 
 # استيراد وحدة الأمان والتشفير الشامل
 from security import (
@@ -146,36 +146,46 @@ def start_health_server():
         except Exception as e:
             logger.warning(f"تعذر تشغيل خادم فحص الصحة: {e}")
 
-OLLAMA_AVAILABLE = False
+def detect_engine_mode() -> str:
+    """
+    تحديد محرك الذكاء الاصطناعي تلقائياً:
+    - 'ollama': تشغيل محلي على حاسوبك عبر Ollama وكرت الشاشة
+    - 'gemini': تشغيل سحابي على سيرفر Render عبر Google Gemini API
+    """
+    # 1. إذا تم تحديد المحرك يدوياً في .env
+    forced = os.environ.get("FORCE_ENGINE", "").lower().strip()
+    if forced in ["gemini", "cloud"]:
+        return "gemini"
+    if forced in ["ollama", "local"]:
+        return "ollama"
+
+    # 2. فحص هل البيئة سحابية (Render يضع تلقائياً RENDER=true أو PORT)
+    is_cloud = bool(os.environ.get("RENDER") or (os.environ.get("PORT") and sys.platform != "win32"))
+    if is_cloud:
+        return "gemini"
+
+    # 3. فحص هل محرك Ollama متاح ويعمل محلياً
+    if check_ollama_running() or ensure_ollama_server():
+        return "ollama"
+
+    # 4. في حال عدم توفر Ollama، التحول التلقائي الذكي لـ Gemini
+    return "gemini"
+
+ACTIVE_ENGINE = "gemini"
 
 def chat_with_gemini_text(messages: list, user_name: str = "أبو يوسف") -> str:
     """معالجة النصوص عبر Gemini تلقائياً في السحاب (Render) عند عدم توفر Ollama"""
     if not gemini_client:
         return "⚠️ عذراً، مفتاح Gemini API غير مضبوط أو غير متوفر في السيرفر."
 
-    now = datetime.datetime.now()
-    days_ar = ["الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
-    months_ar = [
-        "يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو",
-        "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"
-    ]
-    day_name = days_ar[now.weekday()]
-    month_name = months_ar[now.month - 1]
-    date_str = f"{day_name}، {now.day} {month_name} {now.year}"
-    time_str = now.strftime("%I:%M").lstrip("0") + (" صباحاً" if now.strftime("%p") == "AM" else " مساءً")
-
-    system_instruction = (
-        f"أنت 'هيرمز' (Hermes)، مساعد ذكي وودود وناطق باللغة العربية لـ {user_name}.\n"
-        f"الوقت الحالي: اليوم هو {date_str} والساعة {time_str}.\n"
-        f"أجب دائماً باللغة العربية الفصحى السليمة والمباشرة والموجزة بدون أي ترجمات أو تعقيدات."
-    )
+    sys_prompt = get_current_system_prompt(user_name)
 
     contents = []
-    for msg in messages:
-        if msg["role"] == "user":
-            contents.append(f"المستخدم: {msg['content']}")
-        elif msg["role"] == "assistant":
-            contents.append(f"هيرمز: {msg['content']}")
+    # تخطي رسالة النظام الأولى لأنها ستمرر في system_instruction
+    history_messages = messages[1:] if len(messages) > 1 and messages[0].get("role") == "system" else messages
+    for msg in history_messages:
+        role_label = user_name if msg["role"] == "user" else "هيرمز"
+        contents.append(f"{role_label}: {msg['content']}")
 
     prompt_text = "\n".join(contents)
     last_err = None
@@ -185,7 +195,7 @@ def chat_with_gemini_text(messages: list, user_name: str = "أبو يوسف") ->
                 model=model_name,
                 contents=prompt_text,
                 config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
+                    system_instruction=sys_prompt,
                     temperature=0.35,
                 )
             )
@@ -194,6 +204,7 @@ def chat_with_gemini_text(messages: list, user_name: str = "أبو يوسف") ->
             last_err = e
             continue
     return f"⚠️ تعذر الحصول على رد من السحابة: {last_err}"
+
 
 def chat_with_hermes_arabic(messages: list, model: str = ACTIVE_MODEL) -> str:
     """إرسال المحادثة النصية إلى Ollama محلياً بمعاملات متوازنة تمنع التكرار والتنظير"""
@@ -337,14 +348,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     loop = asyncio.get_running_loop()
     try:
-        if OLLAMA_AVAILABLE:
+        if ACTIVE_ENGINE == "ollama":
             try:
+                # 🖥️ المعالجة محلياً عبر كرت الشاشة ونموذج Hermes 3
                 reply = await loop.run_in_executor(None, chat_with_hermes_arabic, history, ACTIVE_MODEL)
             except Exception as ex:
-                logger.warning(f"تعذر الرد عبر Ollama، جاري التحويل إلى Gemini: {ex}")
+                logger.warning(f"تعذر الرد عبر Ollama المحلي، جاري التحويل التلقائي إلى Gemini: {ex}")
                 reply = await loop.run_in_executor(None, chat_with_gemini_text, history, user_name)
         else:
-            # السيرفر يعمل على Render بدون كرت شاشة/Ollama
+            # ☁️ المعالجة سحابياً عبر سيرفر Render بواسطة Gemini API
             reply = await loop.run_in_executor(None, chat_with_gemini_text, history, user_name)
 
         if not reply:
@@ -420,26 +432,29 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         secure_delete_file(local_path)
 
 def main():
-    global ACTIVE_MODEL, OLLAMA_AVAILABLE
+    global ACTIVE_MODEL, ACTIVE_ENGINE
     print("=" * 60)
     print("      تشغيل بوت تيليجرام لوكيل هيرمز (Hermes 3)")
-    print("      نظام هجين: محلي (Ollama) وسحابي (Render + Gemini)")
+    print("      نظام التحويل الذكي: Ollama محلياً + Gemini سحابياً (Render)")
     print("      نظام الأمان المتقدم والتشفير الكامل: مفعّل 🔒")
     print("=" * 60)
 
     # تشغيل خادم فحص الصحة لمنع إيقاف الخدمة في Render Web Service
     start_health_server()
 
-    OLLAMA_AVAILABLE = ensure_ollama_server()
-    if OLLAMA_AVAILABLE:
-        ACTIVE_MODEL = select_model()
-        print(f"[✓] المحرك المحلي متصل بنجاح (النموذج: {ACTIVE_MODEL})")
-    else:
-        print("[i] تنبيه: محرك Ollama المحلي غير متوفر (بيئة سحابية Render).")
-        print("[✓] تم تفعيل وضع السحابة بنجاح: Gemini API للنصوص والصوت!")
+    # تحديد بيئة التشغيل تلقائياً (محلي أو Render)
+    ACTIVE_ENGINE = detect_engine_mode()
 
-    print(f"[✓] محرك الصوت مدعوم بواسطة Gemini API")
-    print(f"[✓] تشفير سجلات المحادثة على القرص: مفعّل 100% (AES / Fernet)")
+    if ACTIVE_ENGINE == "ollama":
+        ACTIVE_MODEL = select_model()
+        print(f"[🖥️ الوضع النشط]: محلي على جهازك (Ollama - النموذج: {ACTIVE_MODEL})")
+        print(f"[⚡ تسريع المعالجة]: يعمل عبر كرت الشاشة بدون استهلاك أي حصة خارجية")
+    else:
+        print("[☁️ الوضع النشط]: سحابي على سيرفر Render")
+        print("[⚡ سرعة واستقرار]: يعمل بنظام Gemini 3.8 Flash الذكي للنصوص والصوت 24/7!")
+
+    print(f"[🎙️ معالجة الصوت]: Google Gemini Multimodal Audio")
+    print(f"[🔒 تشفير البيانات]: AES / Fernet على القرص (مفعّل 100%)")
     
     allowed_list = os.environ.get("ALLOWED_USER_IDS", "").strip()
     status_allowed = "متاح للجميع" if (not allowed_list or allowed_list.lower() in ["all", "*"]) else f"مقيد بمعرفات محددة: {allowed_list}"
